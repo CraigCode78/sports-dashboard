@@ -332,6 +332,12 @@ async function fetchJSON(url) {
   return r.json();
 }
 
+function getScore(s) {
+  if (s === null || s === undefined) return '?';
+  if (typeof s === 'object') return s.value ?? s.displayValue ?? s.score ?? '?';
+  return String(s);
+}
+
 function timeAgo(dateStr) {
   const d = new Date(dateStr);
   const diff = (Date.now() - d) / 1000;
@@ -396,7 +402,7 @@ async function loadTeamCard(teamKey, elementId) {
             <div class="result-label">Last Result</div>
             <div class="result-teams">
               <div class="result-team">${home.team.shortDisplayName || home.team.displayName}</div>
-              <div class="result-score" style="${scoreColor}">${home.score} – ${away.score}</div>
+              <div class="result-score" style="${scoreColor}">${getScore(home.score)} – ${getScore(away.score)}</div>
               <div class="result-team right">${away.team.shortDisplayName || away.team.displayName}</div>
             </div>
             <div class="result-meta">${last.name || comp.venue?.fullName || ''} · ${timeAgo(last.date)}</div>
@@ -497,7 +503,7 @@ async function loadTopResults() {
               <div class="sport-tag">${s.label}</div>
               <div class="match">
                 <div class="team-name">${c1.team.shortDisplayName || c1.team.displayName}</div>
-                <div class="score">${status?.completed || status?.state === 'in' ? (c1.score||'?') + ' – ' + (c2.score||'?') : 'vs'}</div>
+                <div class="score">${status?.completed || status?.state === 'in' ? getScore(c1.score) + ' – ' + getScore(c2.score) : 'vs'}</div>
                 <div class="team-name away">${c2.team.shortDisplayName || c2.team.displayName}</div>
               </div>
               <div class="comp">${statusHtml}</div>
