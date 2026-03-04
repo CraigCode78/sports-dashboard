@@ -320,21 +320,22 @@
 // ─── Config ──────────────────────────────────────────
 const ESPN = 'https://site.api.espn.com/apis/site/v2/sports';
 const TEAMS = {
-  rangers:   { sport: 'soccer', league: 'sco.1',     espnId: '376',  abbr: 'RANG' },
-  liverpool: { sport: 'soccer', league: 'eng.1',     espnId: '364',  abbr: 'LIV'  },
-  lakers:    { sport: 'basketball', league: 'nba',   espnId: '13',   abbr: 'LAL'  }
+  rangers:   { sport: 'soccer',     league: 'sco.1', espnId: '376', abbr: 'RANG' },
+  liverpool: { sport: 'soccer',     league: 'eng.1', espnId: '364', abbr: 'LIV'  },
+  lakers:    { sport: 'basketball', league: 'nba',   espnId: '13',  abbr: 'LAL'  }
 };
 
-// ─── Fetch helpers ────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────
 async function fetchJSON(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
+// ESPN returns scores as plain strings in scoreboard, objects with displayValue in schedule
 function getScore(s) {
   if (s === null || s === undefined) return '?';
-  if (typeof s === 'object') return s.value ?? s.displayValue ?? s.score ?? '?';
+  if (typeof s === 'object') return s.displayValue ?? String(Math.round(s.value ?? 0));
   return String(s);
 }
 
@@ -351,16 +352,30 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
-// ─── Find team games ──────────────────────────────────
-async function getTeamGames(teamKey) {
-  const t = TEAMS[teamKey];
-  const url = `${ESPN}/${t.sport}/${t.league}/teams/${t.espnId}/schedule`;
-  const data = await fetchJSON(url);
-  return data;
+function dateStr(d) {
+  return d.toISOString().slice(0,10).replace(/-/g,'');
 }
 
-async function getScoreboard(sport, league) {
-  return fetchJSON(`${ESPN}/${sport}/${league}/scoreboard`);
+// ─── Basketball: get recent results from scoreboard (schedule has null scores) ──
+async function getBasketballRecentGames(espnId) {
+  const today = new Date();
+  const results = [];
+  // Check last 14 days of scoreboards
+  for (let i = 0; i <= 14; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    try {
+      const data = await fetchJSON(`${ESPN}/basketball/nba/scoreboard?dates=${dateStr(d)}`);
+      for (const ev of (data.events || [])) {
+        const comp = ev.competitions?.[0];
+        if (!comp?.status?.type?.completed) continue;
+        const isTeamGame = comp.competitors?.some(c => c.team.id === espnId);
+        if (isTeamGame) results.push(ev);
+      }
+    } catch(e) {}
+    if (results.length >= 5) break;
+  }
+  return results;
 }
 
 // ─── Render team card ─────────────────────────────────
@@ -368,34 +383,40 @@ async function loadTeamCard(teamKey, elementId) {
   const el = document.getElementById(elementId);
   try {
     const t = TEAMS[teamKey];
+    const isSoccer = t.sport === 'soccer';
 
-    // Get schedule
-    let schedule, events = [];
-    try {
-      schedule = await getTeamGames(teamKey);
-      events = schedule.events || [];
-    } catch(e) {
-      // fallback: try scoreboard
-    }
-
-    // Separate past/future
+    // Fetch schedule for fixtures + form structure
+    const schedData = await fetchJSON(`${ESPN}/${t.sport}/${t.league}/teams/${t.espnId}/schedule`);
+    const allEvents = schedData.events || [];
     const now = new Date();
-    const past = events.filter(e => new Date(e.date) < now && e.competitions?.[0]?.status?.type?.completed);
-    const future = events.filter(e => !e.competitions?.[0]?.status?.type?.completed && new Date(e.date) >= now);
 
-    past.sort((a,b) => new Date(b.date) - new Date(a.date));
-    future.sort((a,b) => new Date(a.date) - new Date(b.date));
+    const future = allEvents
+      .filter(e => !e.competitions?.[0]?.status?.type?.completed && new Date(e.date) > now)
+      .sort((a,b) => new Date(a.date) - new Date(b.date));
+
+    let pastEvents = allEvents
+      .filter(e => e.competitions?.[0]?.status?.type?.completed)
+      .sort((a,b) => new Date(b.date) - new Date(a.date));
+
+    // For basketball, supplement with scoreboard data for actual scores
+    let lastResultEvent = null;
+    if (!isSoccer) {
+      const recentGames = await getBasketballRecentGames(t.espnId);
+      if (recentGames.length > 0) lastResultEvent = recentGames[0];
+    } else {
+      lastResultEvent = pastEvents[0] || null;
+    }
 
     let html = '';
 
     // Last result
-    if (past.length > 0) {
-      const last = past[0];
-      const comp = last.competitions?.[0];
+    if (lastResultEvent) {
+      const comp = lastResultEvent.competitions?.[0];
       const home = comp?.competitors?.find(c => c.homeAway === 'home');
       const away = comp?.competitors?.find(c => c.homeAway === 'away');
       if (home && away) {
-        const isWin = comp.competitors.find(c => c.team.abbreviation.toUpperCase() === t.abbr.toUpperCase() || c.team.id === t.espnId)?.winner;
+        const myTeam = comp.competitors.find(c => c.team.id === t.espnId);
+        const isWin = myTeam?.winner;
         const scoreColor = isWin === true ? 'color:#22c55e' : isWin === false ? 'color:#ef4444' : '';
         html += `
           <div class="result-box">
@@ -405,7 +426,7 @@ async function loadTeamCard(teamKey, elementId) {
               <div class="result-score" style="${scoreColor}">${getScore(home.score)} – ${getScore(away.score)}</div>
               <div class="result-team right">${away.team.shortDisplayName || away.team.displayName}</div>
             </div>
-            <div class="result-meta">${last.name || comp.venue?.fullName || ''} · ${timeAgo(last.date)}</div>
+            <div class="result-meta">${comp.venue?.fullName || lastResultEvent.name || ''} · ${timeAgo(lastResultEvent.date)}</div>
           </div>`;
       }
     }
@@ -428,32 +449,34 @@ async function loadTeamCard(teamKey, elementId) {
       }
     }
 
-    // Recent form (last 5)
-    if (past.length > 0) {
-      const last5 = past.slice(0, 5).reverse();
+    // Form (last 5 from schedule)
+    if (pastEvents.length > 0) {
+      const last5 = pastEvents.slice(0, 5).reverse();
       html += `<div class="form-row"><span class="form-label">Form</span>`;
       for (const g of last5) {
         const myComp = g.competitions?.[0]?.competitors?.find(c => c.team.id === t.espnId);
-        const result = !myComp ? 'D' : myComp.winner ? 'W' : (g.competitions?.[0]?.competitors?.some(c => c.team.id !== t.espnId && !c.winner) ? 'D' : 'L');
+        const others = g.competitions?.[0]?.competitors?.filter(c => c.team.id !== t.espnId) || [];
+        const allLost = others.every(c => !c.winner);
+        const result = !myComp ? 'D' : myComp.winner ? 'W' : allLost ? 'D' : 'L';
         html += `<div class="form-dot ${result}">${result}</div>`;
       }
       html += `</div>`;
     }
 
-    // Standings snippet
+    // Standings
     try {
       const standings = await fetchJSON(`${ESPN}/${t.sport}/${t.league}/standings`);
       const entries = standings.standings?.entries || standings.children?.[0]?.standings?.entries || [];
       const myEntry = entries.find(e => e.team?.id === t.espnId);
       if (myEntry) {
-        const pos = myEntry.stats?.find(s => s.name === 'rank' || s.abbreviation === 'RK')?.value || myEntry.stats?.[0]?.value;
+        const pos = myEntry.stats?.find(s => s.abbreviation === 'RK' || s.name === 'rank')?.displayValue;
         const pts = myEntry.stats?.find(s => s.abbreviation === 'PTS' || s.name === 'points')?.displayValue;
-        const gp = myEntry.stats?.find(s => s.abbreviation === 'GP' || s.name === 'gamesPlayed')?.displayValue;
-        if (pts) {
-          html += `<div class="standings-mini">League position: <strong>${pos ? '#'+pos : '–'}</strong> · <strong>${pts} pts</strong>${gp ? ' · '+gp+' games' : ''}</div>`;
-        }
+        const rec = myEntry.stats?.find(s => s.abbreviation === 'W-L' || s.name === 'record')?.displayValue;
+        const gp  = myEntry.stats?.find(s => s.abbreviation === 'GP' || s.name === 'gamesPlayed')?.displayValue;
+        const label = rec ? `Record: <strong>${rec}</strong>` : pts ? `<strong>${pts} pts</strong>` : '';
+        if (label) html += `<div class="standings-mini">${pos ? `Position: <strong>#${pos}</strong> · ` : ''}${label}${gp && !rec ? ` · ${gp} games` : ''}</div>`;
       }
-    } catch(e) { /* standings optional */ }
+    } catch(e) {}
 
     el.innerHTML = html || '<div class="error">No recent data available.</div>';
   } catch(err) {
